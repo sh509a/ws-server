@@ -1,12 +1,14 @@
 const WebSocket = require("ws");
 
-const wss = new WebSocket.Server({ port: 8080 });
+const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
 let waitingPlayer = null;
 let rooms = {};
 
 function send(ws, data) {
-    ws.send(JSON.stringify(data));
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+    }
 }
 
 wss.on("connection", (ws) => {
@@ -17,16 +19,19 @@ wss.on("connection", (ws) => {
 
         if (data.type === "find_match") {
 
-            // 👤 إذا ما فيه لاعب ينتظر
+            // 🚫 منع تكرار نفس اللاعب
+            if (ws.inMatch) return;
+            ws.inMatch = true;
+
+            // 👤 أول لاعب ينتظر
             if (!waitingPlayer) {
                 waitingPlayer = ws;
-                ws.id = generateId();
                 send(ws, { type: "waiting" });
                 return;
             }
 
-            // 🎯 إذا فيه لاعب ينتظر → نسوي غرفة
-            let roomId = "room_" + Math.random().toString(36).substr(2, 6);
+            // 🎯 ثاني لاعب → match
+            const roomId = "room_" + Math.random().toString(36).substr(2, 6);
 
             rooms[roomId] = {
                 p1: waitingPlayer,
@@ -51,21 +56,31 @@ wss.on("connection", (ws) => {
             waitingPlayer = null;
         }
 
-        // 📡 relay WebRTC signals
-        if (data.type === "offer" || data.type === "answer" || data.type === "candidate") {
+        // 📡 relay WebRTC
+        if (["offer", "answer", "candidate"].includes(data.type)) {
             let room = rooms[data.room];
             if (!room) return;
 
             let target = (ws === room.p1) ? room.p2 : room.p1;
-            if (target) send(target, data);
+
+            send(target, data);
         }
     });
 
     ws.on("close", () => {
-        if (waitingPlayer === ws) waitingPlayer = null;
+
+        // تنظيف الانتظار
+        if (waitingPlayer === ws) {
+            waitingPlayer = null;
+        }
+
+        // حذف من الغرف
+        for (let roomId in rooms) {
+            let r = rooms[roomId];
+
+            if (r.p1 === ws || r.p2 === ws) {
+                delete rooms[roomId];
+            }
+        }
     });
 });
-
-function generateId() {
-    return Math.random().toString(36).substr(2, 9);
-}
