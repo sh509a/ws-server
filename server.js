@@ -3,7 +3,6 @@ const WebSocket = require("ws");
 const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
 let waitingPlayer = null;
-let rooms = {};
 
 function send(ws, data) {
     if (ws.readyState === WebSocket.OPEN) {
@@ -12,75 +11,52 @@ function send(ws, data) {
 }
 
 wss.on("connection", (ws) => {
-    console.log("Player connected");
+    console.log("👤 Player connected");
 
     ws.on("message", (msg) => {
         let data = JSON.parse(msg);
 
+        console.log("📩", data.type);
+
+        // 🎯 طلب البحث عن مباراة
         if (data.type === "find_match") {
 
-            // 🚫 منع تكرار نفس اللاعب
-            if (ws.inMatch) return;
-            ws.inMatch = true;
-
-            // 👤 أول لاعب ينتظر
+            // أول لاعب ينتظر
             if (!waitingPlayer) {
                 waitingPlayer = ws;
+
                 send(ws, { type: "waiting" });
                 return;
             }
 
-            // 🎯 ثاني لاعب → match
-            const roomId = "room_" + Math.random().toString(36).substr(2, 6);
-
-            rooms[roomId] = {
-                p1: waitingPlayer,
-                p2: ws
-            };
-
-            waitingPlayer.room = roomId;
-            ws.room = roomId;
-
-            send(waitingPlayer, {
-                type: "match_found",
-                role: "host",
-                room: roomId
-            });
-
-            send(ws, {
-                type: "match_found",
-                role: "client",
-                room: roomId
-            });
-
+            // ثاني لاعب → match
+            let host = waitingPlayer;
+            let client = ws;
             waitingPlayer = null;
+
+            send(host, {
+                type: "match_found",
+                role: "host"
+            });
+
+            send(client, {
+                type: "match_found",
+                role: "client"
+            });
+
+            host.partner = client;
+            client.partner = host;
         }
 
-        // 📡 relay WebRTC
-        if (["offer", "answer", "candidate"].includes(data.type)) {
-            let room = rooms[data.room];
-            if (!room) return;
-
-            let target = (ws === room.p1) ? room.p2 : room.p1;
-
-            send(target, data);
+        // 🔁 WebRTC relay
+        if (data.type === "offer" || data.type === "answer" || data.type === "candidate") {
+            if (ws.partner) {
+                send(ws.partner, data);
+            }
         }
     });
 
     ws.on("close", () => {
-
-        // تنظيف الانتظار
-        if (waitingPlayer === ws) {
-            waitingPlayer = null;
-        }
-
-        // حذف من الغرف
-        for (let roomId in rooms) {
-            let r = rooms[roomId];
-
-            if (r.p1 === ws || r.p2 === ws) {
-                delete rooms[roomId];
-            }
-        }
+        if (waitingPlayer === ws) waitingPlayer = null;
     });
 });
