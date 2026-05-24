@@ -2,7 +2,7 @@ const WebSocket = require("ws");
 const wss = new WebSocket.Server({ port: process.env.PORT || 8080 });
 
 let rooms = {}; 
-const MAX_PLAYERS = 4; // 👥 2 ضد 2 (المجموع 4 لاعبين في الروم)
+const MAX_PLAYERS = 4; 
 
 function send(ws, data) {
     if (ws.readyState === WebSocket.OPEN) {
@@ -11,37 +11,46 @@ function send(ws, data) {
 }
 
 wss.on("connection", (ws) => {
-    console.log("👤 Player connected to 2v2 system");
+    ws.id = "peer_" + Math.floor(Math.random() * 10000);
     ws.currentRoom = null;
     ws.isHost = false;
-    ws.id = "peer_" + Math.floor(Math.random() * 10000); // معرف فريد داخل السيرفر
+    console.log(`👤 لاعب جديد اتصل بالسيرفر. الآيدي: ${ws.id}`);
 
     ws.on("message", (msg) => {
-        let data = JSON.parse(msg);
+        let data;
+        try {
+            data = JSON.parse(msg);
+        } catch (e) {
+            console.error("❌ خطأ في قراءة بيانات الحزمة");
+            return;
+        }
 
         if (data.type === "find_match") {
             let targetRoomId = null;
 
-            // البحث عن غرفة مفتوحة وفيها مكان
+            // كود صارم للبحث عن أي غرفة فيها مكان متاح
             for (let id in rooms) {
-                if (rooms[id].players.length < MAX_PLAYERS) {
+                if (rooms[id] && rooms[id].players && rooms[id].players.length < MAX_PLAYERS) {
                     targetRoomId = id;
-                    break;
+                    break; // وجدنا الغرفة المفتوحة، اخرج من اللوب فوراً!
                 }
             }
 
-            // إذا مالقينا غرفة مفتوحة، نفتح غرفة جديدة فوراً
-            if (!targetRoomId) {
-                targetRoomId = "room_" + Date.now();
-                rooms[targetRoomId] = { host: ws, players: [] };
+            // إذا وجد غرفة مفتوحة يدخلها، وإذا لم يجد ينشئ واحدة جديدة
+            if (targetRoomId) {
+                ws.currentRoom = targetRoomId;
+                ws.isHost = false;
+                rooms[targetRoomId].players.push(ws);
+                console.log(`🤝 اللاعب [${ws.id}] دخل غرفة موجودة مسبقاً: ${targetRoomId}. عدد اللاعبين الحين: ${rooms[targetRoomId].players.length}`);
+            } else {
+                targetRoomId = "room_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+                ws.currentRoom = targetRoomId;
                 ws.isHost = true;
-                console.log(`👑 Created 2v2 room: ${targetRoomId}`);
+                rooms[targetRoomId] = { players: [ws] };
+                console.log(`👑 اللاعب [${ws.id}] هو الأول، تم إنشاء غرفة جديدة له باسم: ${targetRoomId}`);
             }
 
-            ws.currentRoom = targetRoomId;
-            rooms[targetRoomId].players.push(ws);
-
-            // إرسال بيانات الدورة للاعب
+            // إرسال النتيجة للاعب فوراً
             send(ws, {
                 type: "match_found",
                 role: ws.isHost ? "host" : "client",
@@ -49,20 +58,21 @@ wss.on("connection", (ws) => {
                 peer_id: ws.id
             });
 
-            // تنبيه بقية اللاعبين في الغرفة بقدوم لاعب جديد لفتح نفق WebRTC معه
+            // تنبيه بقية اللاعبين في الغرفة بقدوم اللاعب الجديد لفتح نفق الـ WebRTC
             rooms[targetRoomId].players.forEach(player => {
-                if (player !== ws) {
+                if (player.id !== ws.id) {
                     send(player, { type: "new_peer_joined", peer_id: ws.id });
+                    console.log(`📢 إرسال إشعار للـ [${player.id}] بإن الـ [${ws.id}] دخل الغرفة عشان يشبكون WebRTC.`);
                 }
             });
         }
 
-        // تمرير إشارات الـ WebRTC (Offer, Answer, Candidate) بين الأجهزة
+        // تمرير إشارات الـ WebRTC بين الأجهزة داخل الغرفة
         if (data.type === "offer" || data.type === "answer" || data.type === "candidate") {
             let roomId = ws.currentRoom;
             if (roomId && rooms[roomId]) {
                 rooms[roomId].players.forEach(player => {
-                    if (player.id === data.target || (!data.target && player !== ws)) {
+                    if (player.id === data.target) {
                         send(player, { ...data, sender: ws.id });
                     }
                 });
@@ -72,11 +82,15 @@ wss.on("connection", (ws) => {
 
     ws.on("close", () => {
         let roomId = ws.currentRoom;
+        console.log(`❌ اللاعب [${ws.id}] قطع الاتصال.`);
         if (roomId && rooms[roomId]) {
-            rooms[roomId].players = rooms[roomId].players.filter(p => p !== ws);
+            rooms[roomId].players = rooms[roomId].players.filter(p => p.id !== ws.id);
             if (rooms[roomId].players.length === 0) {
+                console.log(`🗑️ الغرفة ${roomId} صارت فاضية، تم حذفها.`);
                 delete rooms[roomId];
             }
         }
     });
 });
+
+console.log("🚀 سيرفر الماتش ميكنج 2v2 يعمل الحين بنجاح...");
